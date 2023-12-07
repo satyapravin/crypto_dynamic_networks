@@ -1,69 +1,18 @@
-#!/usr/bin/env python
-# coding: utf-8
-
-# In[2]:
-
-
-get_ipython().system('pip3 uninstall torch torchvision torchaudio -y')
-get_ipython().system('pip3 install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118')
-
-
-# In[3]:
-
-
+import os
+import shutil
 import torch
-print(torch.__version__)
-print(torch.version.cuda)
-
-
-# In[4]:
-
-
-get_ipython().system('pip3 uninstall torch_geometric -y')
-get_ipython().system('pip3 uninstall -y pyg_lib torch_scatter torch_sparse torch_cluster torch_spline_conv')
-
-get_ipython().system('pip3 install torch_geometric')
-get_ipython().system('pip3 install pyg_lib torch_scatter torch_sparse torch_cluster torch_spline_conv -f https://data.pyg.org/whl/torch-2.1.0+cu118.html')
-
-
-# In[5]:
-
-
-get_ipython().system('pip3 uninstall -y torch-geometric-temporal')
-get_ipython().system('pip3 install torch-geometric-temporal')
-
-
-# In[6]:
-
-
-url = 'https://launchpad.net/~mario-mariomedina/+archive/ubuntu/talib/+files'
-ext = '0.4.0-oneiric1_amd64.deb -qO'
-get_ipython().system('wget $url/libta-lib0_$ext libta.deb')
-get_ipython().system('wget $url/ta-lib0-dev_$ext ta.deb')
-get_ipython().system('dpkg -i libta.deb ta.deb')
-get_ipython().system('pip install ta-lib')
-
-
-# In[7]:
-
-
-import torch
-from torch_geometric_temporal.signal import static_graph_temporal_signal as ts
-
-
-# In[8]:
-
-
-get_ipython().system('pip install pandas --upgrade')
-
-
-# In[9]:
-
-
+import talib
+import pandas as pd
 import numpy as np
+from tqdm import tqdm
+from multiprocessing import Pool, cpu_count, current_process
 from scipy.cluster.hierarchy import linkage
 from scipy.spatial.distance import squareform
 from scipy.cluster.hierarchy import fcluster
+import torch.nn.functional as F
+from torch_geometric.nn import GATv2Conv
+from torch_geometric.nn import aggr
+from torch_geometric_temporal.nn.recurrent import GConvGRU
 
 class Separator:
     def __init__(self, clusters):
@@ -84,14 +33,6 @@ class Separator:
     def correlDist(self, corr):
         dist = ((1 - corr) / 2.)**.5 
         return dist
-
-
-# In[10]:
-
-
-import talib
-import numpy as np
-import pandas as pd
 
 
 class Signaler:
@@ -224,13 +165,6 @@ class Signaler:
         return signal_combined, corrs_combined
 
 
-# In[11]:
-
-
-import pandas as pd
-import numpy as np
-import torch
-
 class Aggregator:
     def __init__(self, clusterOne, clusterTwo):
         self.clusterOne = clusterOne
@@ -313,13 +247,6 @@ class Aggregator:
         return node_attrs
 
 
-# In[12]:
-
-
-import torch.nn.functional as F
-from torch_geometric.nn import GATv2Conv
-from torch_geometric.nn import aggr
-from torch_geometric_temporal.nn.recurrent import GConvGRU
 
 class RecurrentGCN(torch.nn.Module):
     def __init__(self, node_features, edge_features):
@@ -353,45 +280,6 @@ class GComparer(torch.nn.Module):
         logits = self.classifier(out1.mean(dim=0) - out2.mean(dim=0))
         return logits
 
-
-# In[13]:
-
-
-import pandas as pd
-df = pd.read_hdf('/kaggle/input/cryptohourlydata/crypto.hdf')
-df.head()
-
-
-# In[14]:
-
-
-returns_df = df.reset_index(level=0).dropna()
-print(returns_df.head())
-returns_df = returns_df.pivot(columns='level_0', values='return')
-dates = returns_df.index.unique()
-
-
-# In[15]:
-
-
-start_date = dates[0] 
-end_date = start_date + pd.Timedelta(hours=96)
-data = returns_df.truncate(after=end_date)
-c = Separator(2)
-clusters = c.divide(data)
-clusterOne = clusters[1]
-clusterTwo = clusters[2]
-print(clusterOne, clusterTwo)
-
-
-# In[ ]:
-
-
-from multiprocessing import Pool, cpu_count, current_process
-from tqdm import tqdm
-import os
-import shutil
-torch.set_default_dtype(torch.float32)
 
 def train_test(inputs):
     datasets = inputs[0]
@@ -510,57 +398,47 @@ def generate_features(tp):
     except:
         print("Exception")
 
+if __name__ == "__main__":
+    torch.set_default_dtype(torch.float32)
+    df = pd.read_hdf('crypto.hdf')
+    returns_df = df.reset_index(level=0).dropna()
+    returns_df = returns_df.pivot(columns='level_0', values='return')
+    dates = returns_df.index.unique()
+
+    start_date = dates[0] 
+    end_date = start_date + pd.Timedelta(hours=96)
+    data = returns_df.truncate(after=end_date)
+    c = Separator(2)
+    clusters = c.divide(data)
+    clusterOne = clusters[1]
+    clusterTwo = clusters[2]
+    print(clusterOne, clusterTwo)
+
+    data = df.reset_index(level=0).sort_index().iloc[-5000:]
+    hours = data.index.unique()
+
+    OOS = 10
+    HISTORY=275
+
+    windows = generate_windows(data, hours, clusterOne, clusterTwo, returns_df, HISTORY, OOS)
+
+    num_cpu = cpu_count()
+    print("total cpus", num_cpu)
+    with Pool(num_cpu) as p:
+        results = p.map(generate_features, windows)
+
+    folder_path = './models/'
+
+    if os.path.exists(folder_path):
+        shutil.rmtree(folder_path)
+    os.makedirs(folder_path)
+
+    inputs = [(result, clusterOne, clusterTwo) for result in results]
+    print(len(inputs))
+
+    with Pool(num_cpu) as p:
+        outputs = p.map(train_test, inputs)
     
-data = df.reset_index(level=0).sort_index().iloc[-5000:]
-hours = data.index.unique()
-
-OOS = 10
-HISTORY=275
-
-windows = generate_windows(data, hours, clusterOne, clusterTwo, returns_df, HISTORY, OOS)
-
-num_cpu = 4
-with Pool(num_cpu) as p:
-    results = p.map(generate_features, windows)
-
-folder_path = '/kaggle/working/models'
-
-if os.path.exists(folder_path):
-    shutil.rmtree(folder_path)
-os.makedirs(folder_path)
-
-inputs = [(result, clusterOne, clusterTwo) for result in results]
-print(len(inputs))
-
-with Pool(num_cpu) as p:
-    outputs = p.map(train_test, inputs)
-print(outputs)
-
-
-# In[ ]:
-
-
-weights = weights.dropna()
-print(weights.shape)
-print(weights.shape)
-strategy = weights.shift(3).mul(returns_df.loc[weights.index, :])
-strategy.sum(axis=1).astype(float).cumsum().plot()
-
-
-# In[ ]:
-
-
-weights.abs().diff().sum(axis=1).astype('float').describe()
-
-
-# In[ ]:
-
-
-
-
-
-# In[ ]:
-
-
-
-
+    weight_df = pd.concat(outputs)
+    weight_df.to_csv("weights.csv")
+    returns_df.to_csv("returns.csv")
