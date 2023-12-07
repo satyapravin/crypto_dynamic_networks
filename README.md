@@ -1,4 +1,4 @@
-# Crypto Long Short Basket Trading using Temporal Graphs Networks 
+# Crypto Long Short Basket Trading using Temporal Graph Networks 
 
 This is a work in progress repository and tries to do the following (note: I use a 128 core server).
 
