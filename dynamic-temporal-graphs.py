@@ -291,7 +291,7 @@ def train_test(inputs):
     
     model = GComparer(16, 16)
     p_idx = current_process().name.split('-')[1]
-    fname = f'/kaggle/working/models/weights_{p_idx}.pth'
+    fname = f'./models/weights_{p_idx}.pth'
     
     if os.path.isfile(fname):
         model.load_state_dict(torch.load(fname))
@@ -308,6 +308,7 @@ def train_test(inputs):
         loss = 0
         N = len(train_dataset[0]) // 25
         
+        print("running", p_idx, epoch, N * 25)
         for i in range(0, len(train_dataset[0])):
             x1 = torch.tensor(train_dataset[0][i],dtype=torch.float32)
             i1 = torch.tensor(train_dataset[1],dtype=torch.int64)
@@ -422,6 +423,7 @@ if __name__ == "__main__":
 
     num_cpu = cpu_count()
     print("total cpus", num_cpu)
+    results = []
     with Pool(num_cpu) as p:
         results = p.map(generate_features, windows)
 
@@ -432,7 +434,9 @@ if __name__ == "__main__":
     os.makedirs(folder_path)
 
     inputs = [(result, clusterOne, clusterTwo) for result in results]
+    print("inputs:", len(inputs))
 
+    outputs = []
     with Pool(num_cpu) as p:
         outputs = p.map(train_test, inputs)
     
