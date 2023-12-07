@@ -196,14 +196,14 @@ class Aggregator:
         
         
     def construct(self, Ys, node_attrs_1, edge_indices_1, edge_attrs_1, node_attrs_2, edge_indices_2, edge_attrs_2):
-        node_1 = [torch.tensor(ft.T, dtype=torch.float32) for ft in node_attrs_1]
-        edge_1 = [torch.tensor(ef.T, dtype=torch.float32) for ef in edge_attrs_1]
+        node_1 = [ft.T for ft in node_attrs_1]
+        edge_1 = [ef.T for ef in edge_attrs_1]
         
-        node_2 = [torch.tensor(ft.T, dtype=torch.float32) for ft in node_attrs_2]
-        edge_2 = [torch.tensor(ef.T, dtype=torch.float32) for ef in edge_attrs_2]
-        index_1 = torch.tensor(edge_indices_1[0], dtype=torch.int64)
-        index_2 = torch.tensor(edge_indices_2[0], dtype=torch.int64)
-        targets = [torch.tensor(np.asarray([y]), dtype=torch.float32) for y in Ys]
+        node_2 = [ft.T for ft in node_attrs_2]
+        edge_2 = [ef.T for ef in edge_attrs_2]
+        index_1 = edge_indices_1[0]
+        index_2 = edge_indices_2[0]
+        targets = [np.asarray([y]) for y in Ys]
         return (node_1, index_1, edge_1, node_2, index_2, edge_2, targets)
         
     def get_edge_indices_attrs(self, df):
@@ -302,20 +302,20 @@ def train_test(inputs):
 
     train_dataset = datasets[0]
     
-    for epoch in tqdm(range(50)):
-        model.train()
+    model.train()
+    for epoch in tqdm(range(900)):
         losses = []
         loss = 0
         N = len(train_dataset[0]) // 5
         
         for i in range(0, len(train_dataset[0])):
-            x1 = train_dataset[0][i]
-            i1 = train_dataset[1]
-            e1 = train_dataset[2][i]
-            x2 = train_dataset[3][i]
-            i2 = train_dataset[4]
-            e2 = train_dataset[5][i]
-            target = train_dataset[6][i]
+            x1 = torch.tensor(train_dataset[0][i],dtype=torch.float32)
+            i1 = torch.tensor(train_dataset[1],dtype=torch.int64)
+            e1 = torch.tensor(train_dataset[2][i],dtype=torch.float32)
+            x2 = torch.tensor(train_dataset[3][i],dtype=torch.float32)
+            i2 = torch.tensor(train_dataset[4],dtype=torch.int64)
+            e2 = torch.tensor(train_dataset[5][i],dtype=torch.float32)
+            target = torch.tensor(train_dataset[6][i],dtype=torch.float32)
             diff = model(x1, i1, e1, x2, i2, e2)
             loss += criterion(diff[0], target[0])
             
@@ -334,13 +334,13 @@ def train_test(inputs):
     
     model.eval()
     for i in range(len(test_dataset[0])):
-        x1 = test_dataset[0][i]
-        i1 = test_dataset[1]
-        e1 = test_dataset[2][i]
-        x2 = test_dataset[3][i]
-        i2 = test_dataset[4]
-        e2 = test_dataset[5][i]
-        target = test_dataset[6][i]
+        x1 = torch.tensor(test_dataset[0][i], dtype=torch.float32)
+        i1 = torch.tensor(test_dataset[1], dtype=torch.int64)
+        e1 = torch.tensor(test_dataset[2][i], dtype=torch.float32)
+        x2 = torch.tensor(test_dataset[3][i], dtype=torch.float32)
+        i2 = torch.tensor(test_dataset[4], dtype=torch.int64)
+        e2 = torch.tensor(test_dataset[5][i], dtype=torch.float32)
+        target = torch.tensor(test_dataset[6][i], dtype=torch.float32)
         diff = model(x1, i1, e1, x2, i2, e2)
         pred = diff.cpu().detach().numpy()[0]
         pred = F.sigmoid(pred)
@@ -353,7 +353,12 @@ def train_test(inputs):
 
 def generate_windows(data, hours, clusterOne, clusterTwo, returns_df, window_size=300, step_size=10):
     K = hours.shape[0]
-    windows = [(clusterOne, clusterTwo, data, returns_df, hours, i, i+window_size-1) for i in range(0, K - window_size, step_size)]
+    windows = []
+
+    for i in range(0, K - window_size, step_size):
+        train_ds = data.truncate(before=hours[i]).truncate(after=hours[i+window_size-1-10]) 
+        test_ds = data.truncate(before=hours[i+10]).truncate(after=hours[i+window_size-1])
+        windows.append((clusterOne, clusterTwo, train_ds, test_ds, returns_df))
     return windows
 
 
@@ -361,17 +366,12 @@ def generate_features(tp):
     try:
         clusterOne = tp[0]
         clusterTwo = tp[1]
-        data = tp[2]
-        returns_df = tp[3]
-        hours = tp[4]
-        train_start = tp[5]
-        train_end = tp[6] - 10
-        test_start = train_start + 10
-        test_end = tp[6]
+        train_ds = tp[2]
+        test_ds = tp[3]
+        returns_df = tp[4]
 
         s = Signaler()
         aggregator = Aggregator(clusterOne, clusterTwo)
-        train_ds = data.truncate(before=hours[train_start]).truncate(after=hours[train_end]).dropna()
         train_ds = train_ds.reset_index().set_index(['level_0', 'timestamp']).sort_index()
         node_features, edge_features = s.generate(train_ds)
         node_features.sort_index(inplace=True)
@@ -382,8 +382,6 @@ def generate_features(tp):
         target_ret = returns_df.iloc[start_idx:end_idx+4]
         target_ret = target_ret.rolling(window=3).sum().dropna()
         cpu_data = aggregator.get_dataset(node_features, edge_features, target_ret)
-
-        test_ds = data.truncate(before=hours[test_start]).truncate(after=hours[test_end])
         test_ds = test_ds.reset_index().set_index(['level_0', 'timestamp']).sort_index()
         node_features, edge_features = s.generate(test_ds)
         node_features.sort_index(inplace=True)
@@ -412,9 +410,8 @@ if __name__ == "__main__":
     clusters = c.divide(data)
     clusterOne = clusters[1]
     clusterTwo = clusters[2]
-    print(clusterOne, clusterTwo)
 
-    data = df.reset_index(level=0).sort_index().iloc[-5000:]
+    data = df.reset_index(level=0).sort_index()
     hours = data.index.unique()
 
     OOS = 10
@@ -434,7 +431,6 @@ if __name__ == "__main__":
     os.makedirs(folder_path)
 
     inputs = [(result, clusterOne, clusterTwo) for result in results]
-    print(len(inputs))
 
     with Pool(num_cpu) as p:
         outputs = p.map(train_test, inputs)
