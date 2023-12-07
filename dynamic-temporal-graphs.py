@@ -1,14 +1,14 @@
 #!/usr/bin/env python
 # coding: utf-8
 
-# In[1]:
+# In[2]:
 
 
 get_ipython().system('pip3 uninstall torch torchvision torchaudio -y')
 get_ipython().system('pip3 install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118')
 
 
-# In[2]:
+# In[3]:
 
 
 import torch
@@ -16,7 +16,7 @@ print(torch.__version__)
 print(torch.version.cuda)
 
 
-# In[3]:
+# In[4]:
 
 
 get_ipython().system('pip3 uninstall torch_geometric -y')
@@ -26,14 +26,14 @@ get_ipython().system('pip3 install torch_geometric')
 get_ipython().system('pip3 install pyg_lib torch_scatter torch_sparse torch_cluster torch_spline_conv -f https://data.pyg.org/whl/torch-2.1.0+cu118.html')
 
 
-# In[4]:
+# In[5]:
 
 
 get_ipython().system('pip3 uninstall -y torch-geometric-temporal')
 get_ipython().system('pip3 install torch-geometric-temporal')
 
 
-# In[5]:
+# In[6]:
 
 
 url = 'https://launchpad.net/~mario-mariomedina/+archive/ubuntu/talib/+files'
@@ -44,20 +44,20 @@ get_ipython().system('dpkg -i libta.deb ta.deb')
 get_ipython().system('pip install ta-lib')
 
 
-# In[6]:
+# In[7]:
 
 
 import torch
 from torch_geometric_temporal.signal import static_graph_temporal_signal as ts
 
 
-# In[7]:
+# In[8]:
 
 
 get_ipython().system('pip install pandas --upgrade')
 
 
-# In[8]:
+# In[9]:
 
 
 import numpy as np
@@ -86,7 +86,7 @@ class Separator:
         return dist
 
 
-# In[9]:
+# In[10]:
 
 
 import talib
@@ -224,17 +224,12 @@ class Signaler:
         return signal_combined, corrs_combined
 
 
-# In[10]:
+# In[11]:
 
 
 import pandas as pd
 import numpy as np
 import torch
-import torch.nn.functional as F
-from torch_geometric.nn import GCNConv
-from torch_geometric_temporal.nn.recurrent import GConvGRU
-from torch_geometric_temporal.signal import static_graph_temporal_signal as ts
-
 
 class Aggregator:
     def __init__(self, clusterOne, clusterTwo):
@@ -318,22 +313,30 @@ class Aggregator:
         return node_attrs
 
 
-# In[11]:
+# In[12]:
 
+
+import torch.nn.functional as F
+from torch_geometric.nn import GATv2Conv
+from torch_geometric.nn import aggr
+from torch_geometric_temporal.nn.recurrent import GConvGRU
 
 class RecurrentGCN(torch.nn.Module):
     def __init__(self, node_features, edge_features):
         super(RecurrentGCN, self).__init__()
-        self.seq = torch.nn.Sequential(torch.nn.Linear(edge_features, 32),
-                                       torch.nn.ReLU(),
-                                       torch.nn.Linear(32, 1),
-                                       torch.nn.Sigmoid(),
-                                      )
-        self.recurrent = GConvGRU(node_features, 32, 2)
+        self.snapshot = GATv2Conv(in_channels=-1, out_channels=16, edge_dim=edge_features)
+        self.recurrent = GConvGRU(in_channels=16, out_channels=16, K=4)
+        self.aggr = aggr.MLPAggregation(in_channels=16, 
+                                        out_channels=8, 
+                                        max_num_elements=8, 
+                                        num_layers=2,
+                                        hidden_channels=4)
 
     def forward(self, x, edge_index, edge_attr):
-        out = self.seq(edge_attr).squeeze(-1)
-        out = self.recurrent(X=x, edge_index=edge_index, edge_weight=out)
+        out = self.snapshot(x=x, edge_index=edge_index, edge_attr=edge_attr)
+        out = self.recurrent(X=out, edge_index=edge_index)
+        idx = torch.tensor(np.asarray(range(x.shape[0]), dtype=np.int64) + 1)
+        out = self.aggr(out, idx)
         return out
 
 class GComparer(torch.nn.Module):
@@ -341,15 +344,17 @@ class GComparer(torch.nn.Module):
         super(GComparer, self).__init__()
         self.gcn1 = RecurrentGCN(node_features, edge_features)
         self.gcn2 = RecurrentGCN(node_features, edge_features)
-    
+        self.classifier = torch.nn.Sequential(torch.nn.Linear(8, 16),
+                                              torch.nn.ReLU(),
+                                              torch.nn.Linear(16, 1))
     def forward(self, x, xi, xe, y, yi, ye):
         out1 = self.gcn1(x, xi, xe)
         out2 = self.gcn2(y, yi, ye)
-        diff = out1.median()- out2.median()
-        return F.sigmoid(diff)
+        logits = self.classifier(out1.mean(dim=0) - out2.mean(dim=0))
+        return logits
 
 
-# In[12]:
+# In[13]:
 
 
 import pandas as pd
@@ -357,7 +362,7 @@ df = pd.read_hdf('/kaggle/input/cryptohourlydata/crypto.hdf')
 df.head()
 
 
-# In[13]:
+# In[14]:
 
 
 returns_df = df.reset_index(level=0).dropna()
@@ -366,7 +371,7 @@ returns_df = returns_df.pivot(columns='level_0', values='return')
 dates = returns_df.index.unique()
 
 
-# In[14]:
+# In[15]:
 
 
 start_date = dates[0] 
@@ -382,121 +387,154 @@ print(clusterOne, clusterTwo)
 # In[ ]:
 
 
-from IPython.display import clear_output
-from sklearn.metrics import classification_report
+from multiprocessing import Pool, cpu_count, current_process
 from tqdm import tqdm
+import os
+import shutil
 torch.set_default_dtype(torch.float32)
 
-s = Signaler()
-aggregator = Aggregator(clusterOne, clusterTwo)
-data = df.reset_index(level=0).sort_index()
-hours = data.index.unique()
-
-one_size = np.ones(len(clusterOne)) / len(clusterOne)
-two_size = np.ones(len(clusterTwo)) / len(clusterTwo)
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-model = GComparer(16, 16).to(device)
-#model.load_state_dict(torch.load('/kaggle/working/model_weights.pth'))
-weights = pd.DataFrame(index=hours, columns=clusterOne+clusterTwo)
-for name, param in model.named_parameters():
-    if 'weight' in name:
-        torch.nn.init.xavier_uniform_(param)
-    elif 'bias' in name:
-        torch.nn.init.constant_(param, 0)
-        
-optimizer = torch.optim.Adam(model.parameters(), lr=0.0001)
-criterion = torch.nn.BCELoss()
-
-OOS = 10
-HISTORY=540
-for N in range(HISTORY, hours.shape[0]-OOS-2, OOS):    
-    train_ds = data.truncate(before=hours[N-HISTORY]).truncate(after=hours[N]).dropna()
-    train_ds = train_ds.reset_index().set_index(['level_0', 'timestamp']).sort_index()
-    node_features, edge_features = s.generate(train_ds)
-    node_features.sort_index(inplace=True)
-    edge_features.sort_index(inplace=True)
-    return_dates = node_features.index.get_level_values(level='timestamp').sort_values().unique()
-    print(return_dates.shape)
-    start_idx = returns_df.index.get_loc(return_dates[0])
-    end_idx = returns_df.index.get_loc(return_dates[-1])
-    target_ret = returns_df.iloc[start_idx:end_idx+4]
-    target_ret = target_ret.rolling(window=3).sum().dropna()
-    cpu_data = aggregator.get_dataset(node_features, edge_features, target_ret)
-    dataset = []
+def train_test(inputs):
+    datasets = inputs[0]
+    clusterOne = inputs[1]
+    clusterTwo = inputs[2]
     
-    for D in (cpu_data[0], cpu_data[2], cpu_data[3], cpu_data[5], cpu_data[6]):
-        D = [d.to(device) for d in D]
-        dataset.append(D)
+    one_size = np.ones(len(clusterOne)) / len(clusterOne)
+    two_size = np.ones(len(clusterTwo)) / len(clusterTwo)
     
-    dataset.insert(1, cpu_data[1].to(device))
-    dataset.insert(4, cpu_data[4].to(device))
+    model = GComparer(16, 16)
+    p_idx = current_process().name.split('-')[1]
+    fname = f'/kaggle/working/models/weights_{p_idx}.pth'
+    
+    if os.path.isfile(fname):
+        model.load_state_dict(torch.load(fname))
         
-    for epoch in tqdm(range(901)):
+    target_weights = pd.DataFrame(columns=clusterOne+clusterTwo)
+    optimizer = torch.optim.Adam(model.parameters(), lr=0.0001)
+    criterion = torch.nn.BCEWithLogitsLoss()
+
+    train_dataset = datasets[0]
+    
+    for epoch in tqdm(range(50)):
         model.train()
         losses = []
         loss = 0
-        for i in range(0, len(dataset[0])):
-            x1 = dataset[0][i]
-            i1 = dataset[1]
-            e1 = dataset[2][i]
-            x2 = dataset[3][i]
-            i2 = dataset[4]
-            e2 = dataset[5][i]
-            target = dataset[6][i]
+        N = len(train_dataset[0]) // 5
+        
+        for i in range(0, len(train_dataset[0])):
+            x1 = train_dataset[0][i]
+            i1 = train_dataset[1]
+            e1 = train_dataset[2][i]
+            x2 = train_dataset[3][i]
+            i2 = train_dataset[4]
+            e2 = train_dataset[5][i]
+            target = train_dataset[6][i]
             diff = model(x1, i1, e1, x2, i2, e2)
-            loss = criterion(diff, target[0])
-            del x1
-            del i1
-            del e1
-            del x2
-            del i2
-            del e2
-            del target
-            torch.cuda.empty_cache()
-            loss.backward()
-            optimizer.step()
-            optimizer.zero_grad()
-            loss = loss.cpu().detach().numpy()
-            losses.append(loss)
-            loss = 0
+            loss += criterion(diff[0], target[0])
+            
+            if (i > 0 and i % N == 0) or (i == len(train_dataset[0]) - 1):
+                loss.backward()
+                optimizer.step()
+                optimizer.zero_grad()
+                loss = loss.cpu().detach().numpy()
+                losses.append(loss)
+                loss = 0
 
-    clear_output(wait=True)
-    print("timestamp", N, "epoch", epoch, "loss:", np.mean(losses))
-    torch.save(model.state_dict(), '/kaggle/working/model_weights.pth')
-    model = GComparer(16, 16).to(device)
-    model.load_state_dict(torch.load('/kaggle/working/model_weights.pth'))
+    torch.save(model.state_dict(), fname)
+    
+    test_dataset = datasets[1]
+    return_dates = datasets[2]
+    
     model.eval()
-    test_ds = data.truncate(before=hours[N-HISTORY+OOS]).truncate(after=hours[N+OOS])
-    test_ds = test_ds.reset_index().set_index(['level_0', 'timestamp']).sort_index()
-    node_features, edge_features = s.generate(test_ds)
-    node_features.sort_index(inplace=True)
-    edge_features.sort_index(inplace=True)
-    return_dates = node_features.index.get_level_values(level='timestamp').sort_values().unique()
-    start_idx = returns_df.index.get_loc(return_dates[0])
-    end_idx = returns_df.index.get_loc(return_dates[-1])
-    target_ret = returns_df.iloc[start_idx:end_idx+4]
-    target_ret = target_ret.rolling(window=3).sum().dropna()
-    dataset = aggregator.get_dataset(node_features, edge_features, target_ret)
-
-    preds = []
-    Ys = []
-    for i in range(len(dataset[0])):
-        x1 = dataset[0][i].to(device)
-        i1 = dataset[1].to(device)
-        e1 = dataset[2][i].to(device)
-        x2 = dataset[3][i].to(device)
-        i2 = dataset[4].to(device)
-        e2 = dataset[5][i].to(device)
-        target = dataset[6][i].to(device)
+    for i in range(len(test_dataset[0])):
+        x1 = test_dataset[0][i]
+        i1 = test_dataset[1]
+        e1 = test_dataset[2][i]
+        x2 = test_dataset[3][i]
+        i2 = test_dataset[4]
+        e2 = test_dataset[5][i]
+        target = test_dataset[6][i]
         diff = model(x1, i1, e1, x2, i2, e2)
-        pred = diff.cpu().detach().numpy()
+        pred = diff.cpu().detach().numpy()[0]
+        pred = F.sigmoid(pred)
         pred = (pred > 0.5).astype(int)
-        preds.append(pred)
-        Ys.append(target.cpu().detach().numpy().flatten().astype(int)[0])
-        if i > len(dataset[0]) - OOS:
+        
+        if i > len(test_dataset[0]) - 10:
             weights.loc[return_dates[i], clusterOne] = one_size if pred > 0 else -one_size
             weights.loc[return_dates[i], clusterTwo] = two_size if pred < 1 else -two_size
-    print(classification_report(Ys, preds, zero_division=0))
+    return weights
+
+def generate_windows(data, hours, clusterOne, clusterTwo, returns_df, window_size=300, step_size=10):
+    K = hours.shape[0]
+    windows = [(clusterOne, clusterTwo, data, returns_df, hours, i, i+window_size-1) for i in range(0, K - window_size, step_size)]
+    return windows
+
+
+def generate_features(tp):
+    try:
+        clusterOne = tp[0]
+        clusterTwo = tp[1]
+        data = tp[2]
+        returns_df = tp[3]
+        hours = tp[4]
+        train_start = tp[5]
+        train_end = tp[6] - 10
+        test_start = train_start + 10
+        test_end = tp[6]
+
+        s = Signaler()
+        aggregator = Aggregator(clusterOne, clusterTwo)
+        train_ds = data.truncate(before=hours[train_start]).truncate(after=hours[train_end]).dropna()
+        train_ds = train_ds.reset_index().set_index(['level_0', 'timestamp']).sort_index()
+        node_features, edge_features = s.generate(train_ds)
+        node_features.sort_index(inplace=True)
+        edge_features.sort_index(inplace=True)
+        return_dates = node_features.index.get_level_values(level='timestamp').sort_values().unique()
+        start_idx = returns_df.index.get_loc(return_dates[0])
+        end_idx = returns_df.index.get_loc(return_dates[-1])
+        target_ret = returns_df.iloc[start_idx:end_idx+4]
+        target_ret = target_ret.rolling(window=3).sum().dropna()
+        cpu_data = aggregator.get_dataset(node_features, edge_features, target_ret)
+
+        test_ds = data.truncate(before=hours[test_start]).truncate(after=hours[test_end])
+        test_ds = test_ds.reset_index().set_index(['level_0', 'timestamp']).sort_index()
+        node_features, edge_features = s.generate(test_ds)
+        node_features.sort_index(inplace=True)
+        edge_features.sort_index(inplace=True)
+        return_dates = node_features.index.get_level_values(level='timestamp').sort_values().unique()
+        start_idx = returns_df.index.get_loc(return_dates[0])
+        end_idx = returns_df.index.get_loc(return_dates[-1])
+        target_ret = returns_df.iloc[start_idx:end_idx+4]
+        target_ret = target_ret.rolling(window=3).sum().dropna()
+        test_data = aggregator.get_dataset(node_features, edge_features, target_ret)
+        return (cpu_data, test_data, return_dates)
+    except:
+        print("Exception")
+
+    
+data = df.reset_index(level=0).sort_index().iloc[-5000:]
+hours = data.index.unique()
+
+OOS = 10
+HISTORY=275
+
+windows = generate_windows(data, hours, clusterOne, clusterTwo, returns_df, HISTORY, OOS)
+
+num_cpu = 4
+with Pool(num_cpu) as p:
+    results = p.map(generate_features, windows)
+
+folder_path = '/kaggle/working/models'
+
+if os.path.exists(folder_path):
+    shutil.rmtree(folder_path)
+os.makedirs(folder_path)
+
+inputs = [(result, clusterOne, clusterTwo) for result in results]
+print(len(inputs))
+
+with Pool(num_cpu) as p:
+    outputs = p.map(train_test, inputs)
+print(outputs)
 
 
 # In[ ]:
@@ -513,6 +551,12 @@ strategy.sum(axis=1).astype(float).cumsum().plot()
 
 
 weights.abs().diff().sum(axis=1).astype('float').describe()
+
+
+# In[ ]:
+
+
+
 
 
 # In[ ]:
