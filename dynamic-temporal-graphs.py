@@ -296,7 +296,7 @@ def train_test(inputs):
     if os.path.isfile(fname):
         model.load_state_dict(torch.load(fname))
         
-    target_weights = pd.DataFrame(columns=clusterOne+clusterTwo)
+    weights = pd.DataFrame(columns=clusterOne+clusterTwo)
     optimizer = torch.optim.Adam(model.parameters(), lr=0.0001)
     criterion = torch.nn.BCEWithLogitsLoss()
 
@@ -306,7 +306,7 @@ def train_test(inputs):
     for epoch in tqdm(range(900)):
         losses = []
         loss = 0
-        N = len(train_dataset[0]) // 5
+        N = len(train_dataset[0]) // 25
         
         for i in range(0, len(train_dataset[0])):
             x1 = torch.tensor(train_dataset[0][i],dtype=torch.float32)
@@ -324,6 +324,7 @@ def train_test(inputs):
                 optimizer.step()
                 optimizer.zero_grad()
                 loss = loss.cpu().detach().numpy()
+                print(p_idx, epoch, loss)
                 losses.append(loss)
                 loss = 0
 
