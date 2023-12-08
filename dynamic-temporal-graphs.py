@@ -371,8 +371,8 @@ def train_test(clusterOne, clusterTwo, train_ds, test_ds, returns_ds):
             e2 = torch.tensor(test_dataset[5][i], dtype=torch.float32)
             target = torch.tensor(test_dataset[6][i], dtype=torch.float32)
             diff = model(x1, i1, e1, x2, i2, e2)
-            pred = diff.cpu().detach().numpy()[0]
-            pred = F.sigmoid(pred)
+            pred = F.sigmoid(diff)
+            pred = pred.cpu().detach().numpy()[0]
             pred = (pred > 0.5).astype(int)
         
             if i > len(test_dataset[0]) - 10:
