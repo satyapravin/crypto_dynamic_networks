@@ -255,7 +255,7 @@ def train_test(clusterOne, clusterTwo, train_ds, test_ds, returns_ds):
     class RecurrentGCN(torch.nn.Module):
         def __init__(self, node_features, edge_features):
             super(RecurrentGCN, self).__init__()
-            self.snapshot = GATv2Conv(in_channels=-1, out_channels=16, edge_dim=edge_features)
+            self.snapshot = GATv2Conv(in_channels=node_features, out_channels=16, edge_dim=edge_features)
             self.recurrent = GConvGRU(in_channels=16, out_channels=4, K=1)
             self.aggr = aggr.MLPAggregation(in_channels=4, 
                                             out_channels=4, 
@@ -333,11 +333,8 @@ def train_test(clusterOne, clusterTwo, train_ds, test_ds, returns_ds):
         criterion = torch.nn.BCEWithLogitsLoss()
 
         model.train()
-        for epoch in range(900):
-            losses = []
+        for epoch in range(5000):
             loss = 0
-            N = len(train_dataset[0]) // 25
-        
             for i in range(0, len(train_dataset[0])):
                 x1 = torch.tensor(train_dataset[0][i],dtype=torch.float32)
                 i1 = torch.tensor(train_dataset[1],dtype=torch.int64)
@@ -348,17 +345,12 @@ def train_test(clusterOne, clusterTwo, train_ds, test_ds, returns_ds):
                 target = torch.tensor(train_dataset[6][i],dtype=torch.float32)
                 diff = model(x1, i1, e1, x2, i2, e2)
                 loss += criterion(diff[0], target[0])
-            
-                if (i > 0 and i % N == 0) or (i == len(train_dataset[0]) - 1):
-                    loss.backward()
-                    optimizer.step()
-                    optimizer.zero_grad()
-                    loss = loss.cpu().detach().numpy()
-                    print(p_idx, epoch, loss)
-                    losses.append(loss)
-                    loss = 0
+            loss.backward()
+            optimizer.step()
+            optimizer.zero_grad()
+            loss = loss.cpu().detach().numpy()
+            print("process", p_idx, "epoch", epoch, "loss", loss)
 
-        torch.save(model.state_dict(), fname)
     
         model.eval()
         
@@ -375,24 +367,26 @@ def train_test(clusterOne, clusterTwo, train_ds, test_ds, returns_ds):
             pred = pred.cpu().detach().numpy()[0]
             pred = (pred > 0.5).astype(int)
         
-            if i > len(test_dataset[0]) - 10:
+            if i > len(test_dataset[0]) - 5:
                 weights.loc[return_dates[i], clusterOne] = one_size if pred > 0 else -one_size
                 weights.loc[return_dates[i], clusterTwo] = two_size if pred < 1 else -two_size
+
+        torch.save(model.state_dict(), fname)
         return weights
 
     except Exception as e:
         print("Failed", str(e))
 
 
-def generate_windows(data, hours, clusterOne, clusterTwo, returns_df, window_size=300, step_size=10):
-    K = hours.shape[0] - 10
+def generate_windows(data, hours, clusterOne, clusterTwo, returns_df, window_size=300, step_size=5):
+    K = hours.shape[0] - step_size
     windows = []
 
     for i in range(0, K - window_size, step_size):
-        train_ds = data.truncate(before=hours[i]).truncate(after=hours[i+window_size-1-10]) 
-        test_ds = data.truncate(before=hours[i+10]).truncate(after=hours[i+window_size-1])
+        train_ds = data.truncate(before=hours[i]).truncate(after=hours[i+window_size-1-step_size]) 
+        test_ds = data.truncate(before=hours[i+step_size]).truncate(after=hours[i+window_size-1])
         windows.append((clusterOne, clusterTwo, train_ds, test_ds, 
-                        returns_df.truncate(before=hours[i]).truncate(after=hours[i+window_size+5])))
+                        returns_df.truncate(before=hours[i]).truncate(after=hours[i+window_size+step_size])))
     return windows
 
 
@@ -413,8 +407,8 @@ if __name__ == "__main__":
     data = df.reset_index(level=0).sort_index()
     hours = data.index.unique()
 
-    OOS = 10
-    HISTORY=275
+    OOS = 5
+    HISTORY=575
 
     windows = generate_windows(data, hours, clusterOne, clusterTwo, returns_df, HISTORY, OOS)
 
