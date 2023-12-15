@@ -311,11 +311,14 @@ def train_test(clusterOne, clusterTwo, train_ds, test_ds, returns_ds):
         return cpu_data, test_data, return_dates
 
     try:
-        model = GComparer(16, 16)
         p_idx = os.getpid()
         fname = f'./models/weights_{p_idx}.pth'
         if os.path.isfile(fname):
+            model = GComparer(16, 16)
             model.load_state_dict(torch.load(fname))
+        else:
+            model = GComparer(16, 16)
+
         
         train_dataset, test_dataset, return_dates = generate_features(clusterOne, 
                                                                       clusterTwo, 
@@ -333,8 +336,8 @@ def train_test(clusterOne, clusterTwo, train_ds, test_ds, returns_ds):
         criterion = torch.nn.BCEWithLogitsLoss()
 
         model.train()
-        for epoch in range(5000):
-            loss = 0
+        for epoch in range(500):
+            losses = []
             for i in range(0, len(train_dataset[0])):
                 x1 = torch.tensor(train_dataset[0][i],dtype=torch.float32)
                 i1 = torch.tensor(train_dataset[1],dtype=torch.int64)
@@ -344,12 +347,13 @@ def train_test(clusterOne, clusterTwo, train_ds, test_ds, returns_ds):
                 e2 = torch.tensor(train_dataset[5][i],dtype=torch.float32)
                 target = torch.tensor(train_dataset[6][i],dtype=torch.float32)
                 diff = model(x1, i1, e1, x2, i2, e2)
-                loss += criterion(diff[0], target[0])
-            loss.backward()
-            optimizer.step()
-            optimizer.zero_grad()
-            loss = loss.cpu().detach().numpy()
-            print("process", p_idx, "epoch", epoch, "loss", loss)
+                loss = criterion(diff[0], target[0])
+                loss.backward()
+                optimizer.step()
+                optimizer.zero_grad()
+                loss = loss.cpu().detach().numpy()
+                losses.append(loss)
+            print("process", p_idx, "epoch", epoch, "loss", np.mean(losses))
 
     
         model.eval()
